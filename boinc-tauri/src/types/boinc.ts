@@ -14,3 +14,9 @@ export interface BoincTask {
   estimatedCpuTimeRemaining?: number;
 }
 
+export interface BoincRpcStatus {
+  connection: string;
+  authorized?: boolean;
+  error?: string;
+}
+

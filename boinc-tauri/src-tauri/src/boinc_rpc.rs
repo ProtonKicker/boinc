@@ -11,7 +11,10 @@ use quick_xml::{events::Event, Reader};
 
 #[derive(Debug)]
 pub enum BoincRpcError {
-    Io(String),
+    Io {
+        kind: Option<io::ErrorKind>,
+        message: String,
+    },
     Protocol(String),
     Unauthorized,
     Unsupported(String),
@@ -20,7 +23,7 @@ pub enum BoincRpcError {
 impl std::fmt::Display for BoincRpcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BoincRpcError::Io(msg) => write!(f, "I/O error: {msg}"),
+            BoincRpcError::Io { message, .. } => write!(f, "I/O error: {message}"),
             BoincRpcError::Protocol(msg) => write!(f, "BOINC RPC protocol error: {msg}"),
             BoincRpcError::Unauthorized => write!(f, "BOINC RPC unauthorized"),
             BoincRpcError::Unsupported(msg) => write!(f, "Unsupported: {msg}"),
@@ -32,7 +35,10 @@ impl std::error::Error for BoincRpcError {}
 
 impl From<io::Error> for BoincRpcError {
     fn from(value: io::Error) -> Self {
-        Self::Io(value.to_string())
+        Self::Io {
+            kind: Some(value.kind()),
+            message: value.to_string(),
+        }
     }
 }
 
@@ -52,6 +58,68 @@ pub struct BoincTask {
     pub fraction_done: Option<f64>,
     pub elapsed_time: Option<f64>,
     pub estimated_cpu_time_remaining: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RpcDebugStatus {
+    pub connection: String,
+    pub authorized: Option<bool>,
+    pub error: Option<String>,
+}
+
+pub fn get_rpc_status() -> RpcDebugStatus {
+    let password = match read_gui_rpc_password() {
+        Ok(pwd) => pwd,
+        Err(e) => {
+            return RpcDebugStatus {
+                connection: "Connection Refused".to_string(),
+                authorized: None,
+                error: Some(e.to_string()),
+            };
+        }
+    };
+
+    let mut stream = match connect_local_boinc() {
+        Ok(s) => s,
+        Err(BoincRpcError::Io { kind, message }) => {
+            let is_refused = kind == Some(io::ErrorKind::ConnectionRefused);
+            return RpcDebugStatus {
+                connection: if is_refused {
+                    "Connection Refused".to_string()
+                } else {
+                    "Connection Refused".to_string()
+                },
+                authorized: None,
+                error: Some(message),
+            };
+        }
+        Err(e) => {
+            return RpcDebugStatus {
+                connection: "Connection Refused".to_string(),
+                authorized: None,
+                error: Some(e.to_string()),
+            };
+        }
+    };
+
+    match gui_rpc_auth(&mut stream, &password) {
+        Ok(()) => RpcDebugStatus {
+            connection: "Connected".to_string(),
+            authorized: Some(true),
+            error: None,
+        },
+        Err(BoincRpcError::Unauthorized) => RpcDebugStatus {
+            connection: "Connected".to_string(),
+            authorized: Some(false),
+            error: Some("BOINC RPC unauthorized".to_string()),
+        },
+        Err(e) => RpcDebugStatus {
+            connection: "Connected".to_string(),
+            authorized: None,
+            error: Some(e.to_string()),
+        },
+    }
 }
 
 pub fn get_results(active_only: bool) -> Result<Vec<BoincTask>, BoincRpcError> {
@@ -322,9 +390,10 @@ fn read_gui_rpc_password() -> Result<String, BoincRpcError> {
             }
         }
 
-        Err(BoincRpcError::Io(
-            "could not read gui_rpc_auth.cfg from BOINC data directory".to_string(),
-        ))
+        Err(BoincRpcError::Io {
+            kind: None,
+            message: "could not read gui_rpc_auth.cfg from BOINC data directory".to_string(),
+        })
     }
 }
 
